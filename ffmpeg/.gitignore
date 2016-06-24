@@ -1,0 +1,13 @@
+#¹ıÂË
+Debug/
+Release/
+ipch/
+#¹ıÂË
+*.sdf
+writeFile.opensdf
+writeFile.suo
+writeFile.v12.suo
+ffmpeg_write/Debug/
+ffmpeg_write/Release/
+ffmpeg_write/*.dll
+ffmpeg_write/ffmpeg_write.vcxproj.user

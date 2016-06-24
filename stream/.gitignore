@@ -1,0 +1,16 @@
+#¹ıÂË
+Debug/
+Release/
+ipch/
+#¹ıÂË
+*.sdf
+streampush.opensdf
+streampush.suo
+streampush.v12.suo
+push/Debug/
+push/Release/
+push/ffmpeg.c
+push/ffmpeg.h
+push/ffmpeg_opt.c
+push/push.vcxproj.user
+push/trancode.patch

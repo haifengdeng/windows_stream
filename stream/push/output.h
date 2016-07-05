@@ -2,6 +2,7 @@
 #define FFMPEG_OUTPUT_HEADER_H
 
 #include "config.h"
+#include "boost_thread.h"
 
 extern "C"{
 	struct videoCodec_cfg
@@ -141,7 +142,7 @@ public:
 	}
 
 public:
-	static int write_thread_func(ffmpeg_output *output);
+	static int write_thread_func(void *param);
 	int write_thread();
 private:
 	volatile bool      mActive;
@@ -153,7 +154,7 @@ private:
 
 	bool               mWrite_thread_active;
 	boost::mutex         mWrite_mutex;
-	boost::thread        *mWrite_thread;
+	boost_thread        *mWrite_thread;
 
 	boost::condition_variable  mWrite_cv;
     boost::mutex         mMutex_cv;

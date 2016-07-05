@@ -26,7 +26,11 @@ ff_decoder::ff_decoder(AVCodecContext *codec_context,
 }
 void ff_decoder::push_back_packet(AVPacket* pkt)
 {
+	mMutex_cv.lock();
 	mPacket_queue.push(*pkt);
+	mMutex_cv.unlock();
+	mWrite_cv.notify_all();
+	
 }
 
 int ff_decoder::decode_frame(AVFrame *frame, bool *frame_complete)
@@ -35,41 +39,50 @@ int ff_decoder::decode_frame(AVFrame *frame, bool *frame_complete)
 
 	do {
 		int ret = -1;
+start:
 		if (mAbort)
 			return -1;
-		if (!mPacket_pending){
-			AVPacket pkt;
-			if (mPacket_queue.size() > 0) {
 
+		if (!mPacket_pending){
+			if (mPacket_queue.size() > 0) {
+			    AVPacket pkt;
+			    av_init_packet(&pkt);
+
+				mMutex_cv.lock();
 				pkt = mPacket_queue.front();
 				mPacket_queue.pop();
+				mMutex_cv.unlock();
 
 				if (NULL == pkt.data || 0 == pkt.size){
 					avcodec_flush_buffers(mCodec);
 					mFinished = 1;
 				}
+				av_packet_unref(&mPkt);
+			    mPkt_temp = mPkt = pkt;
+				mPacket_pending = 1;
 			}
-			av_packet_unref(&mPkt);
-			mPkt_temp = mPkt = pkt;
-			mPacket_pending = 1;
-
+			else{
+				boost::unique_lock<boost::mutex> lck(mMutex_cv);
+				boost::cv_status cv_ret = mWrite_cv.wait_for(lck, boost::chrono::milliseconds(10));
+				if (cv_ret == boost::cv_status::timeout){
+				    *frame_complete = false;
+				    return 0;
+				}
+				goto start;
+			}
 		}
 	
 		switch (mCodec->codec_type) {
 		case AVMEDIA_TYPE_VIDEO:
 			ret = avcodec_decode_video2(mCodec, frame, &got_frame, &mPkt_temp);
 			if (got_frame) {
-					frame->pts = frame->pkt_dts;
+			    frame->pts = frame->pkt_pts;
 			}
 			break;
 		case AVMEDIA_TYPE_AUDIO:
 			ret = avcodec_decode_audio4(mCodec, frame, &got_frame, &mPkt_temp);
 			if (got_frame) {
-				AVRational tb = { 1, frame->sample_rate };
-				if (frame->pts != AV_NOPTS_VALUE)
-					frame->pts = av_rescale_q(frame->pts, mCodec->time_base, tb);
-				else if (frame->pkt_pts != AV_NOPTS_VALUE)
-					frame->pts = av_rescale_q(frame->pkt_pts, av_codec_get_pkt_timebase(mCodec), tb);
+				frame->pts = frame->pkt_pts;
 			}
 			break;
 		}
@@ -96,7 +109,9 @@ int ff_decoder::decode_frame(AVFrame *frame, bool *frame_complete)
 		}
 	} while (!got_frame && !mFinished);
 
-	return got_frame;
+	*frame_complete = got_frame;
+
+	return 0;
 }
 
 int ff_decoder::video_decoder_thread()
@@ -112,7 +127,7 @@ int ff_decoder::audio_decoder_thread()
 
 	while (!mAbort) {
 		ret = decode_frame(frame, &frame_complete);
-		if (ret == 0) {
+		if (ret < 0) {
 			break;
 		}
 
@@ -138,8 +153,9 @@ int ff_decoder::audio_decoder_thread()
 
 }
 
-int ff_decoder::decoder_thread(ff_decoder *decoder)
+int ff_decoder::decoder_thread(void *param)
 {
+	ff_decoder *decoder = (ff_decoder *)param;
 	if (decoder->mCodec->codec_type == AVMEDIA_TYPE_VIDEO)
 		return decoder->video_decoder_thread();
 	else
@@ -149,7 +165,7 @@ int ff_decoder::decoder_thread(ff_decoder *decoder)
 
 bool ff_decoder::ff_decoder_start()
 {
-	mDecoder_thread = new boost::thread(ff_decoder::decoder_thread, this);
+	mDecoder_thread = new boost_thread(ff_decoder::decoder_thread, (void*)this);
 	return true;
 }
 
@@ -157,5 +173,10 @@ bool ff_decoder::ff_decoder_start()
 void ff_decoder::decoder_abort()
 {
 	mAbort = true;
-	mDecoder_thread->join();
+
+	if (mDecoder_thread){
+		mDecoder_thread->join();
+		delete mDecoder_thread;
+	}
+	mDecoder_thread = NULL;
 }

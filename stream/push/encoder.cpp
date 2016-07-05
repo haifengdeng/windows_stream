@@ -45,11 +45,11 @@ bool ffmpeg_data::open_video_codec()
 	int ret = 0;
 	AVDictionary *codec_opts=NULL;
 	if (strcmp(mVcodec->name, "libx264") == 0){
-		av_opt_set(mVideoCodecCtx->priv_data, "preset", "veryfast", 0);
+		//av_opt_set(mVideoCodecCtx->priv_data, "preset", "veryfast", 0);
 		av_opt_set(mVideoCodecCtx->priv_data, "tune", "zerolatency", 0);
 		//av_dict_set(codec_opts, "profile", "baseline", 0);
 	}
-	av_dict_set(&codec_opts, "b", "500k", 0);		
+	av_dict_set(&codec_opts, "b", "1000k", 0);		
 	av_dict_set(&codec_opts, "threads", "auto", 0);
 
 	if ((ret = avcodec_open2(mVideoCodecCtx, mVcodec, &codec_opts)) < 0) {
@@ -95,6 +95,7 @@ bool ffmpeg_data::open_video_codec()
 	// copy timebase while removing common factors
 	AVRational rational = { 0, 1 };
 	mVideoStream->time_base = av_add_q(mVideoCodecCtx->time_base, rational);
+	av_dict_free(&codec_opts);
 	return true;
 }
 
@@ -215,7 +216,9 @@ bool ffmpeg_data::create_video_stream()
 	mVideoCodecCtx->height = mConfig.videoconfig.height;
 	mVideoCodecCtx->framerate = mConfig.videoconfig.frame_rate;
 	mVideoCodecCtx->pix_fmt = mConfig.videoconfig.pix_fmt;
-	mVideoCodecCtx->time_base = mConfig.videoconfig.timebase;
+	//must be set by framerate
+	mVideoCodecCtx->time_base.den = mVideoCodecCtx->framerate.num;
+	mVideoCodecCtx->time_base.num = mVideoCodecCtx->framerate.den;
 	mVideoCodecCtx->sample_aspect_ratio = mConfig.videoconfig.frame_aspect_ratio;
 
 	if (!pixel_fmt_support(mVcodec, mVideoCodecCtx->pix_fmt)){
@@ -278,7 +281,7 @@ bool ffmpeg_data::create_audio_stream()
 	audioCodec_cfg_t *cfg = &mConfig.audioconfig;
 	int ret = 0;
 	//create video stream
-	mVideoStream = avformat_new_stream(mOutput, NULL);
+	mAudioStream = avformat_new_stream(mOutput, NULL);
 	//init audio codec
 	mAcodec = avcodec_find_encoder((AVCodecID)mConfig.audioconfig.codecId);
 
@@ -424,7 +427,8 @@ int ffmpeg_data::encode_audio(AVPacket *packet, AVFrame *frame, int *got_packet)
 	}
 
 	if (got_packet){
-		av_packet_rescale_ts(packet, mAudioCodecCtx->time_base, mAudioStream->time_base);
+		av_packet_rescale_ts(packet, std_tb_us, mAudioStream->time_base);
+		packet->stream_index = mAudioStream->index;
 	}
 	return 0;
 }
@@ -432,20 +436,15 @@ int ffmpeg_data::encode_audio(AVPacket *packet, AVFrame *frame, int *got_packet)
 int ffmpeg_data::encode_video(AVPacket *packet, AVFrame *frame, int *got_packet)
 {
 	AVFrame *in_picture = frame;
-	int ret = NULL;
-	double duration = 1;
+	int ret = 0;
 	int debug = 0;
 
 	av_init_packet(packet);
 	packet->data = NULL;
 	packet->size = 0;
 
-	duration = FFMIN(duration, 1 / (av_q2d(mVideoCodecCtx->framerate) * av_q2d(mVideoCodecCtx->time_base)));
-	in_picture->pkt_duration = duration;
 	in_picture->pict_type = AV_PICTURE_TYPE_NONE;
-	//printf("in_picture->pts = %d\n", in_picture->pts);
 
-	if (in_picture->pkt_duration == 0) in_picture->pkt_duration = 1;
 
 	ret = avcodec_encode_video2(mVideoCodecCtx,packet, in_picture, got_packet);
 	if (ret < 0) {
@@ -456,7 +455,8 @@ int ffmpeg_data::encode_video(AVPacket *packet, AVFrame *frame, int *got_packet)
 	if (0 == packet->duration) packet->duration = 1;
 
 	if (got_packet) {
-		av_packet_rescale_ts(packet, mVideoCodecCtx->time_base, mVideoStream->time_base);
+		av_packet_rescale_ts(packet, std_tb_us, mVideoStream->time_base);
+		packet->stream_index = mVideoStream->index;
 	}
 	return 0;
 }

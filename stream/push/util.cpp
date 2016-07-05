@@ -1,4 +1,7 @@
 #include "config.h"
+
+AVRational std_tb_us = {1, AV_TIME_BASE};
+
 static const char *astrblank = "";
 int astrcmpi_n(const char *str1, const char *str2, size_t n)
 {

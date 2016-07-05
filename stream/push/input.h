@@ -2,7 +2,7 @@
 #define FFMPEG_INPUT_HEADER_H
 
 #include "config.h"
-
+#include "boost_thread.h"
 class decoder_callback{
 public:
 	virtual void audio_callback(AVStream *stream, AVCodecContext* codec_ctx,AVFrame * frame) = 0;
@@ -18,7 +18,7 @@ public:
 	void decoder_abort();
 	void push_back_packet(AVPacket* pkt);
 	bool ff_decoder_start();
-	static int decoder_thread(ff_decoder *decoder);
+	static int decoder_thread(void *param);
 private:
 	int decode_frame(AVFrame *frame, bool *frame_complete);
     int audio_decoder_thread();
@@ -28,7 +28,7 @@ public:
 	AVCodecContext *mCodec;
 	AVStream *mStream;
 
-	boost::thread* mDecoder_thread;
+	boost_thread* mDecoder_thread;
 	decoder_callback *mCallback;
 
 	std::queue<AVPacket> mPacket_queue;
@@ -54,7 +54,8 @@ public:
 	bool mPacket_pending;
 	AVPacket mPkt_temp;
 	AVPacket mPkt;
-	
+	boost::condition_variable  mWrite_cv;
+	boost::mutex         mMutex_cv;
 	void resetValue()
 	{
 		mCodec = NULL;
@@ -92,7 +93,7 @@ public:
 
 	int demuxer_open(const char *filename, char *input_format,decoder_callback *callback);
 	void demuxer_close();
-	static int demux_thread(ff_demuxer *demuxer);
+	static int demux_thread(void *param);
 public:
 	decoder_callback *mCallback;
 public:
@@ -105,7 +106,7 @@ public:
 	ff_decoder *mAudio_decoder;
 	ff_decoder *mVideo_decoder;
 
-	boost::thread *mDemuxer_thread;
+	boost_thread *mDemuxer_thread;
 
 	int64_t mStart_pos;
 
@@ -146,6 +147,10 @@ public:
 	enum AVSampleFormat mfmt;
 	AVRational mAtimebase;//AVCodecContext::timebase
 
+
+	AVRational mAudioStream_tb;
+	AVRational mVideoStream_tb;
+
 	void resetValue()
 	{
 		mCallback = NULL;
@@ -155,7 +160,7 @@ public:
 		mAudio_st_index = mVideo_st_index = -1;
 		mAudio_decoder = mVideo_decoder = NULL;
 		mDemuxer_thread = NULL;
-		mStart_pos = mSeek_pos = 0;
+		mStart_pos = mSeek_pos = AV_NOPTS_VALUE;
 		mSeek_request = mSeek_flush = false;
 		mSek_flags = 0;
 		mAbort = false;
@@ -167,7 +172,7 @@ public:
 		mWidth = mHeight = 0;
 	    mpix_fmt = AV_PIX_FMT_NONE;
 		mframe_rate = {0 ,0 };
-		mVtimebase = { 0,0 };
+		mVtimebase = std_tb_us;
 		mframe_aspect_ratio = {0,0 };
 
 		//input audio para
@@ -175,7 +180,9 @@ public:
 		mchannels = 0;
 		mchannel_layout = 0;
 		mfmt = AV_SAMPLE_FMT_NONE;
-		mAtimebase = { 0, 0 };
+		mAtimebase = std_tb_us;
+		mVideoStream_tb = std_tb_us;
+		mAudioStream_tb = std_tb_us;
 	}
 };
 

@@ -49,9 +49,9 @@ int setVideofilter_cfg(videofilter::vfilter_cfg * cfg, AVFormatContext *format_c
 	AVStream *stream,AVFrame *frame)
 {
 	AVCodecContext *codec = stream->codec;
-	cfg->framerate = av_guess_frame_rate(format_ctx, stream, NULL);
+	cfg->framerate = stream->avg_frame_rate;
 	cfg->sample_aspect_ratio = codec->sample_aspect_ratio;
-	cfg->time_base = stream->time_base;
+	cfg->time_base = std_tb_us;
 	cfg->width = frame->width;
 	cfg->height = frame->height;
 	cfg->fmt = (enum AVPixelFormat)frame->format;
@@ -94,6 +94,7 @@ int setVideofilter_cfg(videofilter::vfilter_cfg * cfg, AVFormatContext *format_c
 	ret = avfilter_graph_create_filter(&filt_out,
 		avfilter_get_by_name("buffersink"),
 		"push_buffersink", NULL, NULL, graph);
+
 	if (ret < 0)
 		goto fail;
 
@@ -145,6 +146,11 @@ int setVideofilter_cfg(videofilter::vfilter_cfg * cfg, AVFormatContext *format_c
 		}
 	}
 #endif
+
+	//ret = avfilter_link(filt_src, 0, last_filter, 0);
+	//	if (ret < 0)
+	//		goto fail;
+
 	mSource_ctx = filt_src;
 	mSink_ctx=last_filter;
 	mOutctx = filt_out;
@@ -163,6 +169,7 @@ fail:
  {
 	 int ret = 0;
 	 vfilter_cfg  cfg;
+	 boost::unique_lock<boost::mutex> lck(mMutex);
 	 setVideofilter_cfg(&cfg, format_ctx, stream, frame);
 
 	 bool reconfigure = cfg.width != mLast_cfg.width
@@ -170,7 +177,7 @@ fail:
 		 || cfg.fmt != mLast_cfg.fmt;
 	 if (reconfigure)
 	 {
-		 av_log(NULL, AV_LOG_DEBUG,
+		 av_log(NULL, AV_LOG_INFO,
 			 "Video frame changed from size:%dx%d format:%s to size:%dx%d format:%s\n",
 			 mLast_cfg.width, mLast_cfg.height,
 			 (const char *)av_x_if_null(av_get_pix_fmt_name(mLast_cfg.fmt), "none"),
@@ -229,7 +236,7 @@ int initAudioFilterCfg(audiofilter::AudioParams*cfg, AVCodecContext *avctx)
 }
 int audiofilter::configure_audio_filters(audiofilter::AudioParams *audio_filter_src, const char *afilters, int force_output_format)
 {
-	static const enum AVSampleFormat sample_fmts[] = { AV_SAMPLE_FMT_S16, AV_SAMPLE_FMT_NONE };
+	static const enum AVSampleFormat sample_fmts[] = { AV_SAMPLE_FMT_FLTP, AV_SAMPLE_FMT_NONE };
 	int sample_rates[2] = { 0, -1 };
 	int64_t channel_layouts[2] = { 0, -1 };
 	int channels[2] = { 0, -1 };
@@ -252,7 +259,7 @@ int audiofilter::configure_audio_filters(audiofilter::AudioParams *audio_filter_
 		"sample_rate=%d:sample_fmt=%s:channels=%d:time_base=%d/%d",
 		audio_filter_src->freq, av_get_sample_fmt_name(audio_filter_src->fmt),
 		audio_filter_src->channels,
-		1, audio_filter_src->freq);
+		std_tb_us.num, std_tb_us.den);
 	if (audio_filter_src->channel_layout)
 		snprintf(asrc_args + ret, sizeof(asrc_args) - ret,
 		":channel_layout=0x%"PRIx64, audio_filter_src->channel_layout);
@@ -292,7 +299,7 @@ int audiofilter::configure_audio_filters(audiofilter::AudioParams *audio_filter_
 	mSource_ctx = filt_asrc;
 	mSink_ctx = mOutctx = filt_asink;
 	mSrcParams = *audio_filter_src;
-	mOutFmt = AV_SAMPLE_FMT_S16;
+	mOutFmt = AV_SAMPLE_FMT_FLTP;
 	if ((ret = configGraph(afilters)) < 0)
 		goto end;
 
@@ -306,6 +313,7 @@ int audiofilter::push_frame_back(AVFrame *frame)
 {
 	int ret = 0;
 	AudioParams cfg;
+	boost::unique_lock<boost::mutex> lck(mMutex);
 	setAudioFilterCfg(&cfg, frame);
 
 	bool reconfigure =
@@ -317,16 +325,16 @@ int audiofilter::push_frame_back(AVFrame *frame)
 		char buf1[1024], buf2[1024];
 		av_get_channel_layout_string(buf1, sizeof(buf1), -1, mSrcParams.channel_layout);
 		av_get_channel_layout_string(buf2, sizeof(buf2), -1, cfg.channel_layout);
-		av_log(NULL, AV_LOG_DEBUG,
+		av_log(NULL, AV_LOG_WARNING,
 			"Audio frame changed from rate:%d ch:%d fmt:%s layout:%s to rate:%d ch:%d fmt:%s layout:%s\n",
 			mSrcParams.freq, mSrcParams.channels, av_get_sample_fmt_name(mSrcParams.fmt), buf1,
 			cfg.freq, cfg.channels, av_get_sample_fmt_name(cfg.fmt), buf2);
 
-		if ((ret = configure_audio_filters(&cfg, NULL, 1)) < 0)
+		if ((ret = configure_audio_filters(&cfg, NULL, 0)) < 0)
 			goto the_end;
 	}
 
-	if ((ret = av_buffersrc_add_frame(mSink_ctx, frame)) < 0)
+	if ((ret = av_buffersrc_add_frame(mSource_ctx, frame)) < 0)
 		goto the_end;
 
 the_end:

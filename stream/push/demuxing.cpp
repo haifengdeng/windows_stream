@@ -12,7 +12,7 @@ void ff_demuxer::stream_component_close(int stream_index)
 		mAudio_decoder->decoder_abort();
 		break;
 	case AVMEDIA_TYPE_VIDEO:
-		mAudio_decoder->decoder_abort();
+		mVideo_decoder->decoder_abort();
 		break;
 	default:
 		break;
@@ -39,15 +39,18 @@ void ff_demuxer::demuxer_close()
 
 	mDemuxer_thread->join();
 
+	delete mDemuxer_thread;
+	mDemuxer_thread = NULL;
 	/* close each stream */
 	if (mAudio_st_index >= 0)
 		stream_component_close(mAudio_st_index);
 	if (mVideo_st_index >= 0)
 		stream_component_close(mVideo_st_index);
 
-	avformat_close_input(&mFormat_context);
-	av_free(mInput);
-	av_free(mInput_format);
+	//avformat_close_input(&mFormat_context);
+	//av_freep(&mFormat_context);
+	av_freep(&mInput);
+	av_freep(&mInput_format);
 }
 
 int ff_demuxer::stream_component_open(int stream_index)
@@ -69,12 +72,16 @@ int ff_demuxer::stream_component_open(int stream_index)
 
 	codec = avcodec_find_decoder(avctx->codec_id);
 
+	av_codec_set_pkt_timebase(avctx, std_tb_us);
+
 	switch (avctx->codec_type){
 	case AVMEDIA_TYPE_AUDIO: 
 		mAudio_st_index = stream_index;
+		mAudioStream_tb = mFormat_context->streams[stream_index]->time_base;
 		break;
 	case AVMEDIA_TYPE_VIDEO: 
 		mVideo_st_index = stream_index; 
+		mVideoStream_tb = mFormat_context->streams[stream_index]->time_base;
 		break;
 	}
 
@@ -136,8 +143,9 @@ int ff_demuxer::stream_component_open(int stream_index)
 			mWidth = avctx->width;
 			mHeight=avctx->height;
 			mpix_fmt=avctx->pix_fmt;
-			mframe_rate = avctx->framerate;
-			mVtimebase=avctx->time_base;
+			mframe_rate = mFormat_context->streams[stream_index]->avg_frame_rate; //av_guess_frame_rate(mFormat_context, mFormat_context->streams[stream_index], NULL);
+			mVtimebase.den = mframe_rate.num;
+			mVtimebase.num = mframe_rate.den;
 			mframe_aspect_ratio = avctx->sample_aspect_ratio;
 		}
 		break;
@@ -152,8 +160,9 @@ fail:
 }
 
 /* this thread gets the stream from the disk or the network */
-int ff_demuxer::demux_thread(ff_demuxer *demuxer)
-{
+int ff_demuxer::demux_thread(void *param)
+{    
+	ff_demuxer *demuxer = (ff_demuxer *)param;
 	return demuxer->demux_loop();
 }
 
@@ -211,7 +220,6 @@ int ff_demuxer::open_input()
 	int scan_all_pmts_set = 0;
 
 	mVideo_st_index = mAudio_st_index = -1;
-	mStart_pos = av_gettime_relative();
 
 	mFormat_context = avformat_alloc_context();
 	if (!mFormat_context) {
@@ -288,19 +296,13 @@ int ff_demuxer::find_and_initialize_stream_decoders()
 		ret = stream_component_open(st_index[AVMEDIA_TYPE_VIDEO]);
 	}
 
-	mAudio_decoder->ff_decoder_start();
-	mVideo_decoder->ff_decoder_start();
-
 	return ret;
 }
 int ff_demuxer::demux_loop()
 {
-	int err, i, ret=0;
+	int ret=0;
 
-	AVPacket pkt1, *pkt = &pkt1;
-	int64_t stream_start_time=0;
-	int pkt_in_play_range = 0;
-	int64_t pkt_ts=0;
+	AVPacket pktStack, *pkt = &pktStack;
 
 	if (open_input() < 0)
 		goto fail;
@@ -309,6 +311,10 @@ int ff_demuxer::demux_loop()
 		goto fail;
 	
 	mCallback->demuxer_ready_callback();
+
+	mAudio_decoder->ff_decoder_start();
+	mVideo_decoder->ff_decoder_start();
+
 	for (;;) {
 		if (mAbort)
 			break;
@@ -329,19 +335,58 @@ int ff_demuxer::demux_loop()
 		else {
 			mEof = 0;
 		}
+
+//normalize the timebase of the pkt 
+		AVRational stream_tb;
+		if (pkt->stream_index == mAudio_st_index)
+			stream_tb = mAudioStream_tb;
+		else
+			stream_tb = mVideoStream_tb;
+
+		if (AV_NOPTS_VALUE != pkt->pts)
+			pkt->pts = av_rescale_q(pkt->pts, stream_tb, std_tb_us);
+
+		if (AV_NOPTS_VALUE != pkt->dts)
+			pkt->dts = av_rescale_q(pkt->dts, stream_tb, std_tb_us);
+
+		if (AV_NOPTS_VALUE != pkt->duration)
+			pkt->duration = av_rescale_q(pkt->duration, stream_tb, std_tb_us);
+
+		//debug
+		if (AV_NOPTS_VALUE == pkt->dts || AV_NOPTS_VALUE == pkt->pts)
+			TRACE("packet timestamps not valuable\n");
+
+//set the start offset for correct pts
+		if (AV_NOPTS_VALUE == mStart_pos){
+			if (AV_NOPTS_VALUE != pkt->dts)
+				mStart_pos = pkt->dts;
+			else
+				mStart_pos = pkt->pts;
+		}
+		if (AV_NOPTS_VALUE != pkt->pts)
+		    pkt->pts -= mStart_pos;
+
+		if (AV_NOPTS_VALUE != pkt->dts)
+		    pkt->dts -= mStart_pos;
+
+//if pts < 0 , discard the pkt;
+		if (pkt->pts < 0)
+			goto unref;
+
 		if (pkt->stream_index == mAudio_st_index) {
 			mAudio_decoder->push_back_packet(pkt);
 		}else if (pkt->stream_index == mVideo_st_index) {
 			mVideo_decoder->push_back_packet(pkt);
 		}else {
+unref:
 			av_packet_unref(pkt);
 		}
 	}
 
 	ret = 0;
 fail:
-	if (mFormat_context)
-		avformat_close_input(&mFormat_context);
+	//if (mFormat_context)
+		//avformat_close_input(&mFormat_context);
 	return 0;
 }
 
@@ -354,7 +399,7 @@ int ff_demuxer::demuxer_open(const char *filename, char *input_format, decoder_c
 	mInput_format = av_strdup(input_format);
 	mCallback = callback;
 
-	mDemuxer_thread = new boost::thread(ff_demuxer::demux_thread, this);
+	mDemuxer_thread = new boost_thread(ff_demuxer::demux_thread, (void*)this);
 	if (!mDemuxer_thread) {
 		av_log(NULL, AV_LOG_FATAL, "demux_thread() err\n");
 fail:

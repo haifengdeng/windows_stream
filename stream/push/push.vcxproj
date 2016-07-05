@@ -51,7 +51,7 @@
       <PrecompiledHeader>NotUsing</PrecompiledHeader>
       <WarningLevel>Level3</WarningLevel>
       <Optimization>Disabled</Optimization>
-      <PreprocessorDefinitions>WIN32;_DEBUG;_CONSOLE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <PreprocessorDefinitions>WIN32;_WIN32;_DEBUG;_CONSOLE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <AdditionalIncludeDirectories>include;D:\Cplusplus\boost_1_61_0</AdditionalIncludeDirectories>
     </ClCompile>
     <Link>
@@ -84,6 +84,7 @@
     <None Include="ReadMe.txt" />
   </ItemGroup>
   <ItemGroup>
+    <ClInclude Include="boost_thread.h" />
     <ClInclude Include="filter.h" />
     <ClInclude Include="input.h" />
     <ClInclude Include="output.h" />
@@ -91,6 +92,7 @@
     <ClInclude Include="targetver.h" />
     <ClInclude Include="config.h" />
     <ClInclude Include="trace_debug.h" />
+    <ClInclude Include="videoDisplay.h" />
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="av_sync.cpp">
@@ -124,6 +126,7 @@
     <ClCompile Include="util.cpp">
       <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">NotUsing</PrecompiledHeader>
     </ClCompile>
+    <ClCompile Include="videoDisplay.cpp" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">

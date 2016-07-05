@@ -61,7 +61,7 @@ public:
 		mInitialized = false;
 	}
 	virtual ~av_sync(){}
-	bool init_ok(){ return mInitialized = true; }
+	bool init_ok(){ return mInitialized == true; }
 	void resetSync(int64_t sync_frame_ts);
 	int64_t get_sys_ts(int64_t frame_ts);
 	int64_t get_frame_ts(int64_t sys_ts);
@@ -78,5 +78,6 @@ private:
 	boost::mutex  mMutex;
 };
 
+extern AVRational std_tb_us;
 int64_t get_sys_time();
 #endif // FFMPEG_CONFIG_H

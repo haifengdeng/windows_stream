@@ -34,6 +34,7 @@ private:
 	int configure_filtergraph(AVFilterGraph *graph, const char *filtergraph,
 		AVFilterContext *source_ctx, AVFilterContext *sink_ctx);
 public:
+	boost::mutex         mMutex;
 	AVFilterGraph *mGraph;
 	AVFilterContext *mSource_ctx;
 	AVFilterContext *mSink_ctx;
@@ -62,7 +63,11 @@ public:
 
 	int push_frame_back(AVFormatContext *format_ctx, AVStream *stream, AVFrame *frame);
 	int getFrame(AVFrame*frame){
-		int ret = av_buffersink_get_frame_flags(mOutctx, frame, 0);
+		int ret = -1;
+		boost::unique_lock<boost::mutex> lck(mMutex);
+		if (mOutctx){
+			ret = av_buffersink_get_frame_flags(mOutctx, frame, 0);
+		}
 		return ret;
 	}
 private:
@@ -97,7 +102,13 @@ public:
 	int configure_audio_filters(AudioParams *cfg, const char *afilters, int force_output_format);
 	int push_frame_back(AVFrame *frame);
 	int getFrame(AVFrame*frame){
-		int ret = av_buffersink_get_frame_flags(mOutctx, frame, 0);
+		int ret = -1;
+		boost::unique_lock<boost::mutex> lck(mMutex);
+		if (mOutctx){
+			ret = av_buffersink_get_frame_flags(mOutctx, frame, 0);
+			if (ret>=0)
+			  frame->pts = av_rescale_q(frame->pts, mOutctx->inputs[0]->time_base, std_tb_us);
+		}
 		return ret;
 	}
 public:

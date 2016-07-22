@@ -18,7 +18,6 @@
 #define CONFIG_AVCODEC 1
 
 #include <queue>
-#include "boost/thread.hpp" 
 #include "trace_debug.h"
 
 #include <inttypes.h>
@@ -26,7 +25,13 @@
 #include <limits.h>
 #include <signal.h>
 #include <stdint.h>
-#include <windows.h> 
+#include <windows.h>
+#include <thread>
+#include <mutex>
+#include <condition_variable>
+#include <chrono>
+#include <cassert>
+#include <memory>
 
 extern "C"{
 #include "libavutil/avstring.h"
@@ -51,8 +56,9 @@ extern "C"{
 # include "libavfilter/buffersink.h"
 # include "libavfilter/buffersrc.h"
 #endif
-
+extern AVInputFormat ff_dshowaa_demuxer;
 }
+#include "json/json.h"
 
 class av_sync{
 public:
@@ -75,7 +81,7 @@ private:
 	int64_t mSync_frame_ts;
 	int64_t mSync_Sys_timestampe;
 	bool mInitialized;
-	boost::mutex  mMutex;
+	std::mutex  mMutex;
 };
 
 extern AVRational std_tb_us;

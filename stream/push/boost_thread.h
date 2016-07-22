@@ -32,7 +32,7 @@ public:
 
 	~boost_thread()
 	{
-		//join();
+		join();
 	}
 
 	void join()

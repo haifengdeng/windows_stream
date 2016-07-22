@@ -1,11 +1,10 @@
-#include "input.h"
-#include "output.h"
-#include "filter.h"
-#include "videoDisplay.h"
+#include "push.h"
+
 int init_ffmpeg()
 {
 #if CONFIG_AVDEVICE
 	avdevice_register_all();
+	av_register_input_format(&ff_dshowaa_demuxer);
 #endif
 #if CONFIG_AVFILTER
 	avfilter_register_all();
@@ -15,218 +14,124 @@ int init_ffmpeg()
 	return 0;
 }
 
-class push_callback;
-class push{
-public:
-	struct push_config{
-	public:
-		char *input;
-		char *input_format;
-		
-		char *output;
-		char *output_format;
-		char *video_codec;
-		char *audio_codec;
-		push_config(){ memset(this, 0, sizeof(struct push_config)); }
-	};
-public:
-	push(struct push_config *config);
-	virtual ~push(){}
-	int start_push();
-	int stop_push();
-	static int video_thread(void *param);
-	static int audio_thread(void *param);
-	void audio_callback(AVStream *stream, AVCodecContext* codec_ctx, AVFrame * frame);
-	void video_callback(AVStream *stream, AVCodecContext* codec_ctx, AVFrame * frame);
-	void demuxer_ready_callback();
-	int video_push_thread();
-	int audio_push_thread();
-private:
-	av_sync        mSync;
-	ff_demuxer    *mDemuxer;
-	ffmpeg_output *mOutput;
-	audiofilter   *mAfilter;
-	videofilter   *mVfilter;
-	push_callback *mCallback;
-
-
-	boost_thread *mVideoThread;
-	boost_thread *mAudioThread;
-	videoDisplay *mVideoDisplay;
-	bool mAbort;
-	
-	bool mInited;
-	ffmpeg_cfg mOutcfg;
-	push_config  mConfig;
+//push
+push::push(Json::Value & inputsettings, Json::Value & wasapisettings, Json::Value & outputsetting)
+{
+	mStreamSource = NULL;
+	mWasStreamSource = NULL;
+	mOutput = NULL;
+	mVideoThread = NULL;
+	mAudioThread = NULL;
+	mVideoDisplay = NULL;
+	mAbort = false;
+	mInited = false;
 
 	//for record
-	uint64_t mVtotalFrames;
-	uint64_t mVlaggedFrames;
+	mCountVideoFrame = 0;
+	mCountlaggedVideoFrames = 0;
+	mCountAudioFrame = 0;
+	mCountlaggedAudioFrame = 0;
 
-	uint64_t mAtotalFrames;
-	uint64_t mAlaggedFrames;
-	bool mAudioPending;
-	bool mVideoPending;
-	AVFrame *mVframe;
-	AVFrame *mAframe;
-private:
-	int64_t getMediaInterval(bool audio);
-	void video_sleep(uint64_t *p_time, uint64_t interval_us);
-	void audio_sleep(uint64_t *p_time, uint64_t interval_us);
-	bool getClosedAudioFrame(uint64_t audio_time, AVFrame *frame,uint64_t interval);
-	bool getClosedVideoFrame(uint64_t video_time, AVFrame*frame,uint64_t interval);
-	void resetValue()
-	{
-		mDemuxer = NULL;
-		mOutput = NULL;
-		mAfilter = NULL;
-		mVfilter = NULL;
-		mCallback = NULL;
-		mVideoThread = NULL;
-		mAudioThread = NULL;
-		mVideoDisplay = NULL;
-		mAbort = NULL;
 
-		mInited = false;
-		memset(&mOutcfg,0,sizeof(mOutcfg));
+	mAudioPending = false;
+	mVideoPending = false;
+	mAudioPendingframe = mVideoPendingframe = NULL;
 
-		//for record
-		mVtotalFrames = 0;
-		mVlaggedFrames = 0;
-
-		mAtotalFrames = 0;
-		mAlaggedFrames = 0;
-		mAudioPending = 0;
-		mVideoPending = 0;
-		mVframe = NULL;
-		mAframe = NULL;
-	}
-};
-
-//callback-----------------------------------------------/
-class push_callback :public decoder_callback
-{
-public:
-	push_callback(push * _push){ mPush = _push; }
-	virtual ~push_callback(){}
-public:
-	virtual void audio_callback(AVStream *stream, AVCodecContext* codec_ctx, AVFrame * frame);
-	virtual void video_callback(AVStream *stream, AVCodecContext* codec_ctx, AVFrame * frame);
-	virtual void demuxer_ready_callback();
-private:
-	push *mPush;
-};
-
-void push_callback::audio_callback(AVStream *stream, AVCodecContext* codec_ctx, AVFrame * frame)
-{
-	if (AV_NOPTS_VALUE == frame->pts)
-		TRACE("frame timestamps not valuable\n");
-	mPush->audio_callback(stream,codec_ctx,frame);
+	mInput_JsonSetting = inputsettings;
+	mOutput_JsonSetting = outputsetting;
+	mWasapi_JsonSetting = wasapisettings;
 }
 
-void push_callback::video_callback(AVStream *stream, AVCodecContext* codec_ctx, AVFrame * frame)
+push::~push()
 {
-	if (AV_NOPTS_VALUE == frame->pts)
-		TRACE("frame timestamps not valuable\n");
-
-	mPush->video_callback(stream,codec_ctx,frame);
-}
-void push_callback::demuxer_ready_callback()
-{
-	mPush->demuxer_ready_callback();
-}
-/*-----------------------------------------------------------------------------------------------*/
-//push
-push::push(struct push_config *config)
-{
-	resetValue();
-	mConfig = *config;
-	mDemuxer = new ff_demuxer();
-	mOutput=new ffmpeg_output();
-	mAfilter=new audiofilter();
-	mVfilter=new videofilter();
-	mCallback=new push_callback(this);
-	mVideoDisplay = new videoDisplay();
-
-	mAudioPending=false;
-	mVideoPending=false;
-	mAframe = mVframe = NULL;
-}
-void push::audio_callback(AVStream *stream, AVCodecContext* codec_ctx, AVFrame * frame)
-{
-	if (mInited)
-	    mAfilter->push_frame_back(frame);
-}
-void push::video_callback(AVStream *stream, AVCodecContext* codec_ctx, AVFrame * frame)
-{
-	if (mInited)
-	   mVfilter->push_frame_back(mDemuxer->mFormat_context, stream, frame);
+	stop_push();
+	if (mStreamSource)
+		delete mStreamSource;
+	if (mWasStreamSource)
+		delete mWasStreamSource;
+	if (mOutput)
+		delete mOutput;
 }
 
-void push::demuxer_ready_callback()
-{	
-	mOutcfg.audioconfig.channels = mDemuxer->mchannels;
-	mOutcfg.audioconfig.sample_rate = mDemuxer->mfreq;
-	mOutcfg.audioconfig.sample_fmt = AV_SAMPLE_FMT_FLTP;
-	mOutcfg.audioconfig.timebase = std_tb_us;
-	mOutcfg.audioconfig.codecId = AV_CODEC_ID_AAC;
-	mOutcfg.audioconfig.audio_bitrate = 128 * 1000;
-
-	mOutcfg.videoconfig.video_bitrate = 1000 * 1000;
-	mOutcfg.videoconfig.codecId = AV_CODEC_ID_H264;
-	mOutcfg.videoconfig.frame_aspect_ratio = mDemuxer->mframe_aspect_ratio;
-	mOutcfg.videoconfig.frame_rate = mDemuxer->mframe_rate;	
-	mOutcfg.videoconfig.timebase = std_tb_us;
-	mOutcfg.videoconfig.height = mDemuxer->mHeight;
-	mOutcfg.videoconfig.width = mDemuxer->mWidth;
-	mOutcfg.videoconfig.pix_fmt = AV_PIX_FMT_YUV420P;
-
-
-
-	mOutcfg.url = mConfig.output;
-	mOutcfg.format_name = mConfig.output_format;
-
-	mOutput->start_output(&mOutcfg);
-
-	mAfilter->set_frame_size(mOutput->get_audio_frame_size());
-	mVideoThread = new boost_thread(video_thread, this);
-	mAudioThread = new boost_thread(audio_thread, this);
-	mInited = true;
-}
 
 int push::start_push()
 {
-	mDemuxer->demuxer_open(mConfig.input, mConfig.input_format, mCallback);
+	Json::Value filterOutSetting;
+	mStreamSource = CreateSource(mInput_JsonSetting);
+	mWasStreamSource = CreateSource(mWasapi_JsonSetting);
+	mOutput = new ffmpeg_output(mOutput_JsonSetting);
+
+	//must include below properties
+	filterOutSetting["audioSampleFmt"] = AV_SAMPLE_FMT_FLTP;
+	filterOutSetting["audioFrameSize"] = 1024;
+	filterOutSetting["videoPixFmt"] = AV_PIX_FMT_YUV420P;
+
+	mStreamSource = new MediaFilterSource(mStreamSource, filterOutSetting);
+
+	mStreamSource->activeSourceStream();
+	mWasStreamSource->activeSourceStream();
+	mOutput->start();
+
+	mVideoThread = new boost_thread(video_thread, this);
+	mAudioThread = new boost_thread(audio_thread, this);
+	mInited = true;
 	return 0;
 }
 
 int push::stop_push()
 {
 	mAbort = true;
-	mDemuxer ->demuxer_close();
+	if (mStreamSource){
+		mStreamSource->deactiveSourceStream();
+		delete mStreamSource;
+		mStreamSource = NULL;
+	}
 
-	mVideoThread->join();
-	delete mVideoThread;
-	mVideoThread = NULL;
+	if (mWasStreamSource){
+		mWasStreamSource->deactiveSourceStream();
+		delete mWasStreamSource;
+		mWasStreamSource = NULL;
+	}
+	if (mVideoThread){
+		mVideoThread->join();
+		delete mVideoThread;
+		mVideoThread = NULL;
+	}
 
-	mAudioThread->join();
-	mAudioThread = NULL;
+	if (mAudioThread){
+		mAudioThread->join();
+		delete mAudioThread;
+		mAudioThread = NULL;
+	}
 
-	mOutput ->close_output();
+	if (mOutput){
+		mOutput->stop();
+		delete mOutput;
+		mOutput = NULL;
+	}
 
-	//FIXME:avformat_close_input blocked,don not know why 
-	avformat_close_input(&mDemuxer->mFormat_context);
-	av_freep(&mDemuxer->mFormat_context);
+	if (mVideoDisplay){
+		delete mVideoDisplay;
+		mVideoDisplay = NULL;
+	}
+	mInited = false;
 	return 0;
 }
 int64_t push::getMediaInterval(bool audio)
 {
 	int64_t interval = 0;
 	if (mInited){
-		if (!audio)
-			interval = mOutcfg.videoconfig.frame_rate.num * 1000000 / mOutcfg.videoconfig.frame_rate.den;
-		else
-			interval = mOutput->get_audio_frame_size() * 1000000 / mOutcfg.audioconfig.sample_rate;
+		if (!audio){
+			int frame_rate = mInput_JsonSetting["videoFps"].asInt();
+			if (!frame_rate) frame_rate = 30;
+			interval = 1000000 / frame_rate;
+		}
+		else{
+			int frame_size = 1024;
+			int sample_rate = mInput_JsonSetting["audioSampleRate"].asInt();
+			if (!sample_rate) sample_rate = 44100;
+			interval = frame_size * 1000000 / sample_rate;
+		}
 	}
 	return interval;
 }
@@ -248,8 +153,8 @@ void push::video_sleep(uint64_t *p_time, uint64_t interval_us)
 		*p_time = cur_time + interval_us * count;
 	}
 
-	mVtotalFrames += count;
-	mVlaggedFrames += count - 1;
+	mCountVideoFrame += count;
+	mCountlaggedVideoFrames += count - 1;
 }
 
 void push::audio_sleep(uint64_t *p_time, uint64_t interval_us)
@@ -269,17 +174,19 @@ void push::audio_sleep(uint64_t *p_time, uint64_t interval_us)
 		*p_time = cur_time + interval_us * count;
 	}
 
-	mAtotalFrames += count;
-	mAlaggedFrames += count - 1;
+	mCountAudioFrame += count;
+	mCountlaggedAudioFrame += count - 1;
 }
 
 bool push::getClosedAudioFrame(uint64_t audio_time, AVFrame *frame,uint64_t interval)
 {
 	while(!mAbort){
-		if ((!mAudioPending)&&( mAfilter->getFrame(frame)<0 ))
-			return false;
-		else if(mAudioPending){
-			av_frame_move_ref(frame, mAframe);
+		if (!mAudioPending){
+			if(mStreamSource->getSourceFrame(frame, true) == false)
+				return false;
+		}
+		else if (mAudioPending){
+			av_frame_move_ref(frame, mAudioPendingframe);
 			mAudioPending = false;
 		}
 
@@ -296,8 +203,8 @@ bool push::getClosedAudioFrame(uint64_t audio_time, AVFrame *frame,uint64_t inte
 			continue;
 		}
 		else{
-			if (!mAframe) mAframe = av_frame_alloc();
-			av_frame_move_ref(mAframe, frame);
+			if (!mAudioPendingframe) mAudioPendingframe = av_frame_alloc();
+			av_frame_move_ref(mAudioPendingframe, frame);
 			mAudioPending = true;
 			return false;
 		}
@@ -308,15 +215,17 @@ bool push::getClosedAudioFrame(uint64_t audio_time, AVFrame *frame,uint64_t inte
 bool push::getClosedVideoFrame(uint64_t video_time, AVFrame*frame, uint64_t interval)
 {
 	while (!mAbort&&mSync.init_ok()){
-		if (!mVideoPending&&mVfilter->getFrame(frame) < 0)
-			return false;
+		if (!mVideoPending){
+			if(mStreamSource->getSourceFrame(frame, false) == false)
+				return false;
+		}
 		else if (mVideoPending){
-			av_frame_move_ref(frame, mVframe);
+			av_frame_move_ref(frame, mVideoPendingframe);
 			mVideoPending = false;
 		}
 
-	//	if (!mSync.init_ok())
-	//		mSync.resetSync(frame->pts);
+		//if (!mSync.init_ok())
+		//	mSync.resetSync(frame->pts);
 
 		if (mSync.frame_within_curent(frame->pts, interval)){
 			return true;
@@ -328,8 +237,9 @@ bool push::getClosedVideoFrame(uint64_t video_time, AVFrame*frame, uint64_t inte
 			continue;
 		}
 		else{
-			if (!mVframe) mVframe = av_frame_alloc();
-			av_frame_move_ref(mVframe, frame);
+			if (!mVideoPendingframe) 
+				mVideoPendingframe = av_frame_alloc();
+			av_frame_move_ref(mVideoPendingframe, frame);
 			mVideoPending = true;
 			return false;
 		}
@@ -352,8 +262,12 @@ int push::video_push_thread()
 		if (getClosedVideoFrame(video_time, frame,interval))
 		{
 			TRACE("push video frame\n");
+
+			if (!mVideoDisplay)
+				mVideoDisplay = new videoDisplay();
 			mVideoDisplay->showVideoFrame(frame);
-			mOutput->video_frame(frame);
+
+			mOutput->raw_video(frame);
 			av_frame_unref(frame);
 		}
 		video_sleep(&video_time,interval);
@@ -371,8 +285,9 @@ int push::audio_push_thread()
 	{
 		if (getClosedAudioFrame(audio_time, frame, interval))
 		{
+			mWasStreamSource->rawRender(frame);
 			TRACE("push audio frame\n");
-			mOutput->audio_frame(frame);
+			mOutput->raw_audio(frame);
 			av_frame_unref(frame);
 		}
 		audio_sleep(&audio_time, interval);
@@ -389,46 +304,4 @@ int push::audio_thread(void *param)
 {
 	push * _push = (push *)param;
 	return _push->audio_push_thread();
-}
-
-#include <signal.h>
-
-bool  processAborted = false;
-
-void SignalHandler(int signal)
-{
-	TRACE("recieve a signal:%d\n",signal);
-	processAborted = true;
-}
-
-int main(int argc, char **argv)
-{
-	signal(SIGINT, SignalHandler);
-	signal(SIGTERM, SignalHandler);
-
-	push::push_config config;
-	config.input = "video=Integrated Camera:audio=External Mic (Realtek High Defi";
-	config.input_format="dshow";
-
-	config.output = "rtmp://10.128.164.55:1990/live/stream_test6";
-	//config.output = "D:/pushtest.flv";
-	config.output_format="flv";
-	config.video_codec="libx264";
-	config.audio_codec="aac";
-	init_ffmpeg();
-	push *_push = new push(&config);
-	_push->start_push();
-
-
-	while (!processAborted)
-	{
-		av_usleep(1000);
-		int ch = getchar();
-		if (ch == 'q')
-			break;
-
-	}
-	_push->stop_push();
-	delete _push;
-	return 0;
 }

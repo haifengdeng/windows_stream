@@ -41,9 +41,31 @@ static enum AVCodecID get_codec_id(const char *name, int id)
 
 	return codec->id;
 }
+#include <mmsystem.h>
+
+static bool have_clockfreq = false;
+static LARGE_INTEGER clock_freq;
+
+static inline uint64_t get_clockfreq(void)
+{
+	if (!have_clockfreq)
+		QueryPerformanceFrequency(&clock_freq);
+	return clock_freq.QuadPart;
+}
 
 int64_t get_sys_time()
 {
-	return av_gettime_relative();
+	LARGE_INTEGER current_time;
+	double time_val;
+
+	QueryPerformanceCounter(&current_time);
+	time_val = (double)current_time.QuadPart;
+	time_val *= 1000000000.0;
+	time_val /= (double)get_clockfreq();
+
+	time_val /= 1000;
+
+	return (uint64_t)time_val;
+
 }
 

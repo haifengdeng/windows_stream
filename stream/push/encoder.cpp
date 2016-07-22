@@ -1,6 +1,6 @@
 #include "output.h"
 
-void ffmpeg_data::reset_ffmpeg_data()
+ffmpeg_data::ffmpeg_data(struct ffmpeg_cfg & cfg)
 {
 	mVideoStream = mAudioStream = NULL;
 	mAcodec = mVcodec = NULL;
@@ -8,19 +8,17 @@ void ffmpeg_data::reset_ffmpeg_data()
 	mOutput = NULL;
 
 	mSwscale = NULL;
-	mTotal_frames = 0;
 	mVframe = NULL;
-	mAFrame_size = 0;
 
-	mTotal_samples = 0;
 	mAframe = NULL;
 	mAudioSwrCtx = NULL;
+	mConfig = cfg;
 	mInitialized = false;
-	memset(&mConfig, 0,sizeof(struct ffmpeg_cfg));
+	mStartPTS = AV_NOPTS_VALUE;
 }
-ffmpeg_data::ffmpeg_data()
-{
-	reset_ffmpeg_data();
+
+ffmpeg_data::~ffmpeg_data(){
+	close();
 }
 
 bool ffmpeg_data::pixel_fmt_support(const AVCodec * codec, enum AVPixelFormat pix_fmt)
@@ -200,8 +198,9 @@ bool ffmpeg_data::create_video_stream()
 {
 	//create video stream
 	mVideoStream = avformat_new_stream(mOutput, NULL);
-	mVideoStream->avg_frame_rate = mConfig.videoconfig.frame_rate;
-	mVideoStream->r_frame_rate = mConfig.videoconfig.frame_rate;
+	mVideoStream->avg_frame_rate.num = mConfig.videoconfig.frame_rate;
+	mVideoStream->avg_frame_rate.den = 1;
+	mVideoStream->r_frame_rate = mVideoStream->avg_frame_rate;
 
 	//init video codec
 	mVcodec = avcodec_find_encoder((AVCodecID)mConfig.videoconfig.codecId);
@@ -214,12 +213,11 @@ bool ffmpeg_data::create_video_stream()
 
 	mVideoCodecCtx->width = mConfig.videoconfig.width;
 	mVideoCodecCtx->height = mConfig.videoconfig.height;
-	mVideoCodecCtx->framerate = mConfig.videoconfig.frame_rate;
+	mVideoCodecCtx->framerate = mVideoStream->r_frame_rate;
 	mVideoCodecCtx->pix_fmt = mConfig.videoconfig.pix_fmt;
 	//must be set by framerate
 	mVideoCodecCtx->time_base.den = mVideoCodecCtx->framerate.num;
 	mVideoCodecCtx->time_base.num = mVideoCodecCtx->framerate.den;
-	mVideoCodecCtx->sample_aspect_ratio = mConfig.videoconfig.frame_aspect_ratio;
 
 	if (!pixel_fmt_support(mVcodec, mVideoCodecCtx->pix_fmt)){
 		mVideoCodecCtx->pix_fmt = mVcodec->pix_fmts[0];
@@ -291,7 +289,7 @@ bool ffmpeg_data::create_audio_stream()
 
 	mAudioCodecCtx->sample_fmt = cfg->sample_fmt;
 	mAudioCodecCtx->sample_rate = cfg->sample_rate;
-	mAudioCodecCtx->time_base = cfg->timebase;
+	mAudioCodecCtx->time_base = std_tb_us;
 	if (!sample_fmt_support(mAcodec, mAudioCodecCtx->sample_fmt)){
 		mAudioCodecCtx->sample_fmt = mAcodec->sample_fmts[0];
 	}
@@ -301,10 +299,9 @@ bool ffmpeg_data::create_audio_stream()
 	//open audio codec
 	open_audio_codec();
 	//swr init
-	mAFrame_size = mAudioCodecCtx->frame_size ? mAudioCodecCtx->frame_size : 1024;
 	if (mAudioCodecCtx->sample_fmt != cfg->sample_fmt){
 		mAframe = alloc_audio_frame(mAudioCodecCtx->sample_fmt, mAudioCodecCtx->channels,
-			mAudioCodecCtx->sample_rate, mAFrame_size);
+			mAudioCodecCtx->sample_rate, mAudioCodecCtx->frame_size);
 		/* create resampler context */
 		mAudioSwrCtx = swr_alloc();
 		if (!mAudioSwrCtx) {
@@ -363,31 +360,30 @@ fail:
 	return false;
 }
 
-bool ffmpeg_data::ffmpeg_data_init(ffmpeg_cfg *cfg)
+bool ffmpeg_data::start()
 {
 	bool is_rtmp = false;
 
-	if (!cfg->url || !*cfg->url)
+	if (!mConfig.url)
 		return false;
-	mConfig = *cfg;
 
-	is_rtmp = (astrcmpi_n(cfg->url, "rtmp://", 7) == 0);
+	is_rtmp = (astrcmpi_n(mConfig.url, "rtmp://", 7) == 0);
 
 	AVOutputFormat *output_format = av_guess_format(
-		is_rtmp ? "flv" : cfg->format_name,
-		cfg->url,
-		is_rtmp ? NULL : cfg->format_mime_type);
+		is_rtmp ? "flv" : mConfig.format_name,
+		mConfig.url,
+		NULL);
 
 	if (output_format == NULL) {
 		av_log(NULL, AV_LOG_WARNING, "Couldn't find matching output format with "
 			" parameters: name=%s, url=%s, mime=%s",
-			safe_str(is_rtmp ? "flv" : cfg->format_name),
-			safe_str(cfg->url),
-			safe_str(is_rtmp ? NULL : cfg->format_mime_type));
+			safe_str(is_rtmp ? "flv" : mConfig.format_name),
+			safe_str(mConfig.url),
+			safe_str(NULL));
 		goto fail;
 	}
 	avformat_alloc_output_context2(&mOutput, output_format,
-		NULL, cfg->url);
+		NULL, mConfig.url);
 
 	if (!mOutput) {
 		av_log(NULL,AV_LOG_WARNING, "Couldn't create avformat context");
@@ -405,7 +401,7 @@ bool ffmpeg_data::ffmpeg_data_init(ffmpeg_cfg *cfg)
 	return true;
 
 fail:
-	av_log(NULL, AV_LOG_WARNING, "ffmpeg_data_init failed");
+	av_log(NULL, AV_LOG_WARNING, "ffmpeg_data::start() failed");
 	return false;
 
 }
@@ -494,9 +490,9 @@ void ffmpeg_data::close_audio()
 	}
 }
 
-void ffmpeg_data::free()
+void ffmpeg_data::close()
 {
-	if (mInitialized)
+	if (mInitialized&&mOutput)
 		av_write_trailer(mOutput);
 
 	if (mVideoStream)
@@ -509,42 +505,8 @@ void ffmpeg_data::free()
 			avio_close(mOutput->pb);
 
 		avformat_free_context(mOutput);
+		mOutput = NULL;
 	}
-	reset_ffmpeg_data();
+	mInitialized = false;
 }
 
-
-//output 
-int ffmpeg_output::audio_frame(AVFrame *frame)
-{
-	AVPacket packet = { 0 };
-	int ret = 0, got_packet;
-
-	av_init_packet(&packet);
-
-	ret = mff_data.encode_audio(&packet, frame, &got_packet);
-	if (ret < 0){
-		return ret;
-	}
-	if (got_packet){
-		push_back_packet(&packet);
-	}
-}
-int ffmpeg_output::video_frame(AVFrame *frame)
-{
-	AVPacket packet = { 0 };
-	int ret = 0, got_packet=0;
-
-	av_init_packet(&packet);
-
-	if (!mStart_timestamp)
-		mStart_timestamp = frame->pts;
-
-	ret = mff_data.encode_video(&packet, frame, &got_packet);
-	if (ret < 0){
-		return ret;
-	}
-	if (got_packet){
-		push_back_packet(&packet);
-	}
-}

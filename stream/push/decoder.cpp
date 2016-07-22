@@ -1,34 +1,39 @@
 #include "input.h"
 
 ff_decoder::ff_decoder(AVCodecContext *codec_context,
-	AVStream *stream ,unsigned int packet_queue_size)
+	                   AVStream *stream,
+					   source_callback * callback)
 {
-	resetValue();
-
 	assert(codec_context != NULL);
 	assert(stream != NULL);
+	assert(callback != NULL);
 
 
 	mCodec = codec_context;
 	mStream = stream;
+	mCallback = callback;
 	mAbort = false;
-	mFinished = false;
-	mPacket_pending = 0;
+	mPacket_pending = false;
 
-	mPacket_queue_size = packet_queue_size;
-
-	mTimer_next_wake = (double)av_gettime() / 1000000.0;
-	mPrevious_pts_diff = 40e-3;
-	mCurrent_pts_time = av_gettime();
-	mStart_pts = 0;
-	mPredicted_pts = 0;
-    mFirst_frame = true;
+	mDecoder_thread = NULL;
+	av_init_packet(&mPkt_temp);
+	av_init_packet(&mPkt);
 }
-void ff_decoder::push_back_packet(AVPacket* pkt)
+
+ff_decoder::~ff_decoder()
 {
-	mMutex_cv.lock();
-	mPacket_queue.push(*pkt);
-	mMutex_cv.unlock();
+	decoder_abort();
+}
+void ff_decoder::pushback_packet(AVPacket* pkt)
+{
+	mPacketMutex.lock();
+
+	if (mPacketQueue.size() < maxPacketQueueSize)
+		mPacketQueue.push(*pkt);
+	else
+		av_packet_unref(pkt);
+
+	mPacketMutex.unlock();
 	mWrite_cv.notify_all();
 	
 }
@@ -44,27 +49,26 @@ start:
 			return -1;
 
 		if (!mPacket_pending){
-			if (mPacket_queue.size() > 0) {
+			if (mPacketQueue.size() > 0) {
 			    AVPacket pkt;
 			    av_init_packet(&pkt);
 
-				mMutex_cv.lock();
-				pkt = mPacket_queue.front();
-				mPacket_queue.pop();
-				mMutex_cv.unlock();
+				mPacketMutex.lock();
+				pkt = mPacketQueue.front();
+				mPacketQueue.pop();
+				mPacketMutex.unlock();
 
+				av_packet_unref(&mPkt);	
 				if (NULL == pkt.data || 0 == pkt.size){
 					avcodec_flush_buffers(mCodec);
-					mFinished = 1;
 				}
-				av_packet_unref(&mPkt);
 			    mPkt_temp = mPkt = pkt;
 				mPacket_pending = 1;
 			}
 			else{
-				boost::unique_lock<boost::mutex> lck(mMutex_cv);
-				boost::cv_status cv_ret = mWrite_cv.wait_for(lck, boost::chrono::milliseconds(10));
-				if (cv_ret == boost::cv_status::timeout){
+				std::unique_lock<std::mutex> lck(mMutex_cv);
+				std::cv_status cv_ret = mWrite_cv.wait_for(lck, std::chrono::milliseconds(10));
+				if (cv_ret == std::cv_status::timeout){
 				    *frame_complete = false;
 				    return 0;
 				}
@@ -107,7 +111,7 @@ start:
 				}
 			}
 		}
-	} while (!got_frame && !mFinished);
+	} while (!got_frame);
 
 	*frame_complete = got_frame;
 
@@ -131,25 +135,20 @@ int ff_decoder::audio_decoder_thread()
 			break;
 		}
 
-		// Did we get a audio frame?
 		if (frame_complete) {
-			// If we don't have a good PTS, try to guess based
-			// on last received PTS provided plus prediction
-			// This function returns a pts scaled to stream
-			// time base
-			//mFrame_queue.push(av_frame_clone(frame));
 			if (mCodec->codec_type == AVMEDIA_TYPE_VIDEO)
-				mCallback->video_callback(mStream, mCodec, av_frame_clone(frame));
+				mCallback->video_callback(av_frame_clone(frame));
 			else
-				mCallback->audio_callback(mStream, mCodec,av_frame_clone(frame));
+				mCallback->audio_callback(av_frame_clone(frame));
 			av_frame_unref(frame);
 		}
 	}
 
 	av_frame_free(&frame);
-	mFinished = true;
-
-	return NULL;
+	av_packet_unref(&mPkt);
+	av_init_packet(&mPkt);
+	av_init_packet(&mPkt_temp);
+	return 0;
 
 }
 
@@ -159,7 +158,7 @@ int ff_decoder::decoder_thread(void *param)
 	if (decoder->mCodec->codec_type == AVMEDIA_TYPE_VIDEO)
 		return decoder->video_decoder_thread();
 	else
-		return decoder->video_decoder_thread();
+		return decoder->audio_decoder_thread();
 }
 
 

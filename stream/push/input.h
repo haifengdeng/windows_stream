@@ -3,189 +3,137 @@
 
 #include "config.h"
 #include "boost_thread.h"
-class decoder_callback{
+#include "stream_source.h"
+class source_callback{
 public:
-	virtual void audio_callback(AVStream *stream, AVCodecContext* codec_ctx,AVFrame * frame) = 0;
-	virtual void video_callback(AVStream *stream, AVCodecContext* codec_ctx,AVFrame * frame) = 0;
-	virtual void demuxer_ready_callback()=0;
+	virtual void audio_callback(AVFrame * frame) = 0;
+	virtual void video_callback(AVFrame * frame) = 0;
+};
+
+
+struct input_config
+{
+	//global
+	char *input;
+	char *input_format;
+	//video
+	enum AVPixelFormat pix_fmt;
+	int width;
+	int height;
+	int Fps;
+	//audio
+	int channel;
+	int bitsPerSample;
+	int frequency;
 };
 
 class  ff_decoder {
 public:
-	ff_decoder(AVCodecContext *codec_context,AVStream *stream,
-		unsigned int packet_queue_size);
-	virtual ~ff_decoder(){}
+	ff_decoder(AVCodecContext *codec_context,AVStream *stream,source_callback *callback);
+	virtual ~ff_decoder();
 	void decoder_abort();
-	void push_back_packet(AVPacket* pkt);
+	void pushback_packet(AVPacket* pkt);
 	bool ff_decoder_start();
 	static int decoder_thread(void *param);
+	static const int maxPacketQueueSize = 10;
 private:
 	int decode_frame(AVFrame *frame, bool *frame_complete);
     int audio_decoder_thread();
     int video_decoder_thread();
 
-public:
+private:
 	AVCodecContext *mCodec;
 	AVStream *mStream;
+	source_callback *mCallback;
 
 	boost_thread* mDecoder_thread;
-	decoder_callback *mCallback;
-
-	std::queue<AVPacket> mPacket_queue;
-	std::queue<AVFrame*> mFrame_queue;
-	unsigned int mPacket_queue_size;
-
-	double mTimer_next_wake;
-	double mPrevious_pts;       // previous decoded frame's pts
-	double mPrevious_pts_diff;  // previous decoded frame pts delay
-	double mPredicted_pts;      // predicted pts of next frame
-	double mCurrent_pts;        // pts of the most recently dispatched frame
-	int64_t mCurrent_pts_time;  // clock time when current_pts was set
-	int64_t mStart_pts;
-
-	bool mHwaccel_decoder;
-	enum AVDiscard mFrame_drop;
-
-	bool mFirst_frame;
-	bool mEof;
+	std::queue<AVPacket> mPacketQueue;
 	bool mAbort;
 
-	bool mFinished;
 	bool mPacket_pending;
+
 	AVPacket mPkt_temp;
 	AVPacket mPkt;
-	boost::condition_variable  mWrite_cv;
-	boost::mutex         mMutex_cv;
-	void resetValue()
-	{
-		mCodec = NULL;
-		mStream = NULL;
-
-		mDecoder_thread = NULL;
-		mCallback = NULL;
-
-		mPacket_queue_size = 0;
-
-		mTimer_next_wake=0;
-		mPrevious_pts=0;
-		mPrevious_pts_diff=0;
-		mPredicted_pts=0;      
-		mCurrent_pts=0;       
-		mCurrent_pts_time=0; 
-		mStart_pts=0;
-
-		mHwaccel_decoder = 0;
-		mFrame_drop = AVDISCARD_NONE;
-
-		mFirst_frame = mEof = mAbort = false;
-
-		mFinished = false;
-		mPacket_pending = false;
-		av_init_packet(&mPkt_temp);
-		av_init_packet(&mPkt);
-	}
+	std::condition_variable  mWrite_cv;
+	std::mutex         mMutex_cv;
+	std::mutex   mPacketMutex;
 };
 
-class ff_demuxer {
+class ff_demuxer
+{
 public:
-	ff_demuxer(){ resetValue(); }
-	virtual ~ff_demuxer(){}
+	ff_demuxer(input_config *config, source_callback * callback);
+	virtual ~ff_demuxer();
 
-	int demuxer_open(const char *filename, char *input_format,decoder_callback *callback);
-	void demuxer_close();
-	static int demux_thread(void *param);
-public:
-	decoder_callback *mCallback;
-public:
-	AVIOContext *mIo_context;
-	AVFormatContext *mFormat_context;
-	AVInputFormat *mFile_iformat;
-	int mAudio_st_index;
-	int mVideo_st_index;
+	int startDemuxer();
+	void stopDemuxer();
+	bool isAborted();
+	//thread
+	static int demuxer_thread(void *param);
+	int demuxer_loop();
+private:
+	int open_input();	
+	int stream_component_open(int streamIndex);
+	void stream_component_close(int streamIndex);
+	int find_and_initialize_stream_decoders();
+	void pushEmptyPacket();
+	void setFmtOpts(AVDictionary ** fmt_opts);
+
+private:
+	input_config * mConfig;
+	AVIOContext *mIoContext;
+	AVFormatContext *mFmtContext;
+	AVInputFormat *mInputFormat;
 
 	ff_decoder *mAudio_decoder;
 	ff_decoder *mVideo_decoder;
 
 	boost_thread *mDemuxer_thread;
-
-	int64_t mStart_pos;
-
-	int64_t mSeek_pos;
-	bool mSeek_request;
-	int mSek_flags;
-	bool mSeek_flush;
-
-	bool mAbort;
-
-	bool mRealtime;
-	bool mVideo_disable;
-	bool mAudio_disable;
-	bool mEof;
-
-	char *mInput;
-	char *mInput_format;
-private:
-	int demux_loop();
-	int open_input();	
-	int stream_component_open(int stream_index);
-	void stream_component_close(int stream_index);
-	int find_and_initialize_stream_decoders();
-	int put_nullpacket(int stream_index);
-public:
-	//input video para
-	int mWidth;
-	int mHeight;
-	enum AVPixelFormat mpix_fmt;
-	AVRational mframe_rate;
-	AVRational mVtimebase;//AVCodecContext::timebase
-	AVRational mframe_aspect_ratio;
-
-	//input audio para
-	int mfreq;
-	int mchannels;
-	int64_t mchannel_layout;
-	enum AVSampleFormat mfmt;
-	AVRational mAtimebase;//AVCodecContext::timebase
-
+	source_callback *mCallback;
 
 	AVRational mAudioStream_tb;
 	AVRational mVideoStream_tb;
 
-	void resetValue()
-	{
-		mCallback = NULL;
-		mIo_context = NULL;
-		mFormat_context = NULL;
-		mFile_iformat = NULL;
-		mAudio_st_index = mVideo_st_index = -1;
-		mAudio_decoder = mVideo_decoder = NULL;
-		mDemuxer_thread = NULL;
-		mStart_pos = mSeek_pos = AV_NOPTS_VALUE;
-		mSeek_request = mSeek_flush = false;
-		mSek_flags = 0;
-		mAbort = false;
-		mRealtime = false;
-		mVideo_disable = false;
-		mAudio_disable = false;
-		mEof = false;
-		mInput = mInput_format = NULL;
-		mWidth = mHeight = 0;
-	    mpix_fmt = AV_PIX_FMT_NONE;
-		mframe_rate = {0 ,0 };
-		mVtimebase = std_tb_us;
-		mframe_aspect_ratio = {0,0 };
-
-		//input audio para
-		mfreq = 0;
-		mchannels = 0;
-		mchannel_layout = 0;
-		mfmt = AV_SAMPLE_FMT_NONE;
-		mAtimebase = std_tb_us;
-		mVideoStream_tb = std_tb_us;
-		mAudioStream_tb = std_tb_us;
-	}
+	int mAudioIndex;
+	int mVideoIndex;
+	int64_t mStartPTS;
+	bool mAbort;
 };
 
+class ffmpegSource_callback;
+class ffmpeg_source :public stream_source
+{
+public:
+	static void getSourceDefaultSetting(Json::Value &setting);
+public:
+	ffmpeg_source(Json::Value & info);
+	~ffmpeg_source();
+	//stream source interface
+	virtual void getSourceStringId(std::string & id);
+	virtual int getSourceType();
+	virtual int getSourceFlag();
+	virtual int activeSourceStream();
+	virtual int deactiveSourceStream();
+	virtual bool isactive();
+	virtual int updateSourceSetting(Json::Value & info);
+	virtual void getSourceProperties(Json::Value &props, propertytype flag);
+	virtual bool getSourceFrame(AVFrame* frame, bool audio);
+	virtual AVFrame* getSourceFrame(bool audio);
 
+private:
+	friend ffmpegSource_callback;
+	void audio_callback(AVFrame * frame);
+	void video_callback(AVFrame * frame);
+private:
+	ff_demuxer    *mDemuxer;
+	input_config  mInputCfg;
+	ffmpegSource_callback *mCallback;
+    std::queue<AVFrame*> mAudioFrameQueue;
+	std::queue<AVFrame*> mVideoFrameQueue;
+	std::mutex mMutex;
+
+	//input
+	bool mActived;
+};
 
 #endif

@@ -1,175 +1,40 @@
 #include "input.h"
 
-void ff_demuxer::stream_component_close(int stream_index)
-{
-	if (stream_index < 0 || stream_index >= mFormat_context->nb_streams)
-		return;
+ff_demuxer::ff_demuxer(input_config *config, source_callback*callback)
+{ 
+	mConfig = config;
+	mCallback = callback;
 
-	AVCodecContext *avctx = mFormat_context->streams[stream_index]->codec;
+	mIoContext = NULL;
+	mFmtContext = NULL;
+	mInputFormat = NULL;
 
-	switch (avctx->codec_type) {
-	case AVMEDIA_TYPE_AUDIO:
-		mAudio_decoder->decoder_abort();
-		break;
-	case AVMEDIA_TYPE_VIDEO:
-		mVideo_decoder->decoder_abort();
-		break;
-	default:
-		break;
-	}
+	mAudio_decoder = NULL;
+	mVideo_decoder = NULL;
 
-	mFormat_context->streams[stream_index]->discard = AVDISCARD_ALL;
-	avcodec_close(avctx);
-	switch (avctx->codec_type) {
-	case AVMEDIA_TYPE_AUDIO:
-		mAudio_st_index = -1;
-		break;
-	case AVMEDIA_TYPE_VIDEO:
-		mVideo_st_index = -1;
-		break;
-	default:
-		break;
-	}
-}
-
-void ff_demuxer::demuxer_close()
-{
-	mAbort = 1;
-	/* XXX: use a special url_shutdown call to abort parse cleanly */
-
-	mDemuxer_thread->join();
-
-	delete mDemuxer_thread;
 	mDemuxer_thread = NULL;
-	/* close each stream */
-	if (mAudio_st_index >= 0)
-		stream_component_close(mAudio_st_index);
-	if (mVideo_st_index >= 0)
-		stream_component_close(mVideo_st_index);
 
-	//avformat_close_input(&mFormat_context);
-	//av_freep(&mFormat_context);
-	av_freep(&mInput);
-	av_freep(&mInput_format);
+	mAudioStream_tb = std_tb_us;
+	mVideoStream_tb = std_tb_us;
+	mAudioIndex = -1;
+	mVideoIndex = -1;
+
+	mStartPTS = AV_NOPTS_VALUE;
+	mAbort = false;
 }
-
-int ff_demuxer::stream_component_open(int stream_index)
+ff_demuxer::~ff_demuxer()
 {
-	AVCodecContext *avctx=NULL;
-	AVCodec *codec=NULL;
-	const char *forced_codec_name = NULL;
-	AVDictionary *opts=NULL;
-	AVDictionaryEntry *t = NULL;
-	int sample_rate=0, nb_channels=0;
-	int64_t channel_layout=0;
-	int ret = 0;
-	int stream_lowres = -1;
-
-	if (stream_index < 0 || stream_index >= mFormat_context->nb_streams)
-		return -1;
-
-	avctx = mFormat_context->streams[stream_index]->codec;
-
-	codec = avcodec_find_decoder(avctx->codec_id);
-
-	av_codec_set_pkt_timebase(avctx, std_tb_us);
-
-	switch (avctx->codec_type){
-	case AVMEDIA_TYPE_AUDIO: 
-		mAudio_st_index = stream_index;
-		mAudioStream_tb = mFormat_context->streams[stream_index]->time_base;
-		break;
-	case AVMEDIA_TYPE_VIDEO: 
-		mVideo_st_index = stream_index; 
-		mVideoStream_tb = mFormat_context->streams[stream_index]->time_base;
-		break;
-	}
-
-	if (!codec) {
-		av_log(NULL, AV_LOG_WARNING,
-			"No codec could be found with id %d\n", avctx->codec_id);
-		return -1;
-	}
-
-	avctx->codec_id = codec->id;
-	stream_lowres = av_codec_get_max_lowres(codec);
-	av_log(avctx, AV_LOG_WARNING, "The maximum value for lowres supported by the decoder is %d\n",
-			av_codec_get_max_lowres(codec));
-	av_codec_set_lowres(avctx, stream_lowres);
-
-#if FF_API_EMU_EDGE
-	if (stream_lowres) avctx->flags |= CODEC_FLAG_EMU_EDGE;
-#endif
-
-	avctx->flags2 |= AV_CODEC_FLAG2_FAST;
-#if FF_API_EMU_EDGE
-	if (codec->capabilities & AV_CODEC_CAP_DR1)
-		avctx->flags |= CODEC_FLAG_EMU_EDGE;
-#endif
-
-	if (!av_dict_get(opts, "threads", NULL, 0))
-		av_dict_set(&opts, "threads", "auto", 0);
-	if (stream_lowres)
-		av_dict_set_int(&opts, "lowres", stream_lowres, 0);
-	if (avctx->codec_type == AVMEDIA_TYPE_VIDEO || avctx->codec_type == AVMEDIA_TYPE_AUDIO)
-		av_dict_set(&opts, "refcounted_frames", "1", 0);
-	if ((ret = avcodec_open2(avctx, codec, &opts)) < 0) {
-		goto fail;
-	}
-	if ((t = av_dict_get(opts, "", NULL, AV_DICT_IGNORE_SUFFIX))) {
-		av_log(NULL, AV_LOG_ERROR, "Option %s not found.\n", t->key);
-		ret = AVERROR_OPTION_NOT_FOUND;
-		goto fail;
-	}
-
-	mFormat_context->streams[stream_index]->discard = AVDISCARD_DEFAULT;
-	switch (avctx->codec_type) {
-	case AVMEDIA_TYPE_AUDIO:
-		mAudio_decoder = new ff_decoder(avctx, mFormat_context->streams[stream_index], 26);
-		mAudio_decoder->mCallback = mCallback;
-		{
-			mfreq = avctx->sample_rate;
-			mchannels = avctx->channels;
-			mchannel_layout = avctx->channel_layout;
-			mfmt = avctx->sample_fmt;
-			mAtimebase = avctx->time_base;
-		}
-		break;
-	case AVMEDIA_TYPE_VIDEO:
-		mVideo_decoder = new ff_decoder(avctx, mFormat_context->streams[stream_index], 26);
-		mVideo_decoder->mCallback = mCallback;
-			//init para
-		{
-			mWidth = avctx->width;
-			mHeight=avctx->height;
-			mpix_fmt=avctx->pix_fmt;
-			mframe_rate = mFormat_context->streams[stream_index]->avg_frame_rate; //av_guess_frame_rate(mFormat_context, mFormat_context->streams[stream_index], NULL);
-			mVtimebase.den = mframe_rate.num;
-			mVtimebase.num = mframe_rate.den;
-			mframe_aspect_ratio = avctx->sample_aspect_ratio;
-		}
-		break;
-	default:
-		break;
-	}
-
-fail:
-	av_dict_free(&opts);
-
-	return ret;
+	stopDemuxer();
 }
 
-/* this thread gets the stream from the disk or the network */
-int ff_demuxer::demux_thread(void *param)
-{    
-	ff_demuxer *demuxer = (ff_demuxer *)param;
-	return demuxer->demux_loop();
+bool ff_demuxer::isAborted()
+{
+	return mAbort;
 }
-
 int interrupt_cb(void *ctx)
 {
-	ff_demuxer *demuxer =(ff_demuxer*) ctx;
-	return demuxer->mAbort;
+	ff_demuxer *demuxer = (ff_demuxer*)ctx;
+	return demuxer->isAborted();
 }
 
 void print_error(const char *filename, int err)
@@ -182,135 +47,243 @@ void print_error(const char *filename, int err)
 	av_log(NULL, AV_LOG_ERROR, "%s: %s\n", filename, errbuf_ptr);
 }
 
-static int is_realtime(AVFormatContext *s)
+void ff_demuxer::pushEmptyPacket()
 {
-	if (!strcmp(s->iformat->name, "rtp")
-		|| !strcmp(s->iformat->name, "rtsp")
-		|| !strcmp(s->iformat->name, "sdp")
-		)
-		return 1;
+	AVPacket pkt;
+	av_init_packet(&pkt);
 
-	if (s->pb && (!strncmp(s->filename, "rtp:", 4)
-		|| !strncmp(s->filename, "udp:", 4)
-		)
-		)
-		return 1;
-	return 0;
+	pkt.data = NULL;
+	pkt.size = 0;
+
+	if (mAudio_decoder){
+		pkt.stream_index = mAudioIndex;
+		mAudio_decoder->pushback_packet(&pkt);
+	}
+
+	if (mVideo_decoder){
+		pkt.stream_index = mVideoIndex;
+		mVideo_decoder->pushback_packet(&pkt);
+	}
 }
 
-int ff_demuxer::put_nullpacket(int stream_index)
+void ff_demuxer::stream_component_close(int streamIndex)
 {
-	AVPacket pkt1, *pkt = &pkt1;
-	av_init_packet(pkt);
-	pkt->data = NULL;
-	pkt->size = 0;
-	pkt->stream_index = stream_index;
-	if (stream_index == mAudio_st_index)
-		mAudio_decoder->push_back_packet(pkt);
-	else
-		mVideo_decoder->push_back_packet(pkt);
+	AVCodecContext *avctx = mFmtContext->streams[streamIndex]->codec;
 
-	return 0;
+	switch (avctx->codec_type) {
+	case AVMEDIA_TYPE_AUDIO:
+		mAudio_decoder->decoder_abort();
+		delete mAudio_decoder;
+		mAudio_decoder = NULL;
+		break;
+	case AVMEDIA_TYPE_VIDEO:
+		mVideo_decoder->decoder_abort();
+		delete mVideo_decoder;
+		mVideo_decoder = NULL;
+		break;
+	default:
+		break;
+	}
+	avcodec_close(avctx);
 }
 
-int ff_demuxer::open_input()
+void ff_demuxer::stopDemuxer()
 {
-	int err, i, ret;
-	AVDictionary *format_opts = NULL;
-	int scan_all_pmts_set = 0;
-
-	mVideo_st_index = mAudio_st_index = -1;
-
-	mFormat_context = avformat_alloc_context();
-	if (!mFormat_context) {
-		av_log(NULL, AV_LOG_FATAL, "Could not allocate context.\n");
-		ret = AVERROR(ENOMEM);
-		goto fail;
+	mAbort = 1;
+	if (mDemuxer_thread){
+		mDemuxer_thread->join();
+		delete mDemuxer_thread;
+		mDemuxer_thread = NULL;
 	}
-	mFormat_context->interrupt_callback.callback = interrupt_cb;
-	mFormat_context->interrupt_callback.opaque = this;
-	if (!av_dict_get(format_opts, "scan_all_pmts", NULL, AV_DICT_MATCH_CASE)) {
-		av_dict_set(&format_opts, "scan_all_pmts", "1", AV_DICT_DONT_OVERWRITE);
-		scan_all_pmts_set = 1;
-	}
-	av_dict_set(&format_opts, "framerate", "30", 0);
-	if (!mFile_iformat)
-		mFile_iformat = av_find_input_format(mInput_format);
+	/* close each stream */
+	if (mAudioIndex >= 0)
+		stream_component_close(mAudioIndex);
+	mAudioIndex = -1;
 
-	err = avformat_open_input(&mFormat_context, mInput, mFile_iformat, &format_opts);
-	if (err < 0) {
-		print_error(mInput, err);
-		ret = -1;
-		goto fail;
-	}
+	if (mVideoIndex >= 0)
+		stream_component_close(mVideoIndex);
+	mVideoIndex = -1;
 
-	mFormat_context->flags |= AVFMT_FLAG_GENPTS;
+	avformat_close_input(&mFmtContext);
+	av_freep(&mFmtContext);
+}
 
-	av_format_inject_global_side_data(mFormat_context);
+int ff_demuxer::stream_component_open(int streamIndex)
+{
+	AVCodec *codec=NULL;
+	AVDictionary *opts=NULL;
+	AVDictionaryEntry *t = NULL;
+	int ret = 0;
 
-	if (err < 0) {
+	AVCodecContext* avctx = mFmtContext->streams[streamIndex]->codec;
+    codec = avcodec_find_decoder(avctx->codec_id);
+	if (!codec) {
 		av_log(NULL, AV_LOG_WARNING,
-			"%s: could not find codec parameters\n", mInput);
-		ret = -1;
+			"No codec could be found with id %d\n", avctx->codec_id);
+		return -1;
+	}
+
+	av_codec_set_pkt_timebase(avctx, std_tb_us);
+
+	avctx->codec_id = codec->id;
+	avctx->flags2 |= AV_CODEC_FLAG2_FAST;
+
+	if (!av_dict_get(opts, "threads", NULL, 0))
+		 av_dict_set(&opts, "threads", "auto", 0);
+	if (avctx->codec_type == AVMEDIA_TYPE_VIDEO || 
+		avctx->codec_type == AVMEDIA_TYPE_AUDIO)
+		av_dict_set(&opts, "refcounted_frames", "1", 0);
+	if ((ret = avcodec_open2(avctx, codec, &opts)) < 0) {
 		goto fail;
 	}
 
-	if (mFormat_context->pb)
-		mFormat_context->pb->eof_reached = 0; // FIXME hack, ffplay maybe should not use avio_feof() to test for the end
+	switch (avctx->codec_type) {
+	case AVMEDIA_TYPE_AUDIO:
+		mAudio_decoder = new ff_decoder(avctx, mFmtContext->streams[streamIndex], mCallback);
+		break;
+	case AVMEDIA_TYPE_VIDEO:
+		mVideo_decoder = new ff_decoder(avctx, mFmtContext->streams[streamIndex],mCallback);
+		break;
+	default:
+		break;
+	}
 
-	mRealtime = is_realtime(mFormat_context);
-
-	av_dump_format(mFormat_context, 0, mInput, 0);
-	av_dict_free(&format_opts);
-	return 0;
 fail:
-	av_dict_free(&format_opts);
-	return -1;
+	av_dict_free(&opts);
+	return ret;
 }
 
 int ff_demuxer::find_and_initialize_stream_decoders()
 {
 	int ret = 0;
-	int st_index[AVMEDIA_TYPE_NB] = { 0 };
-	memset(st_index, -1, sizeof(st_index));
+	mAudioIndex = -1;
+	mVideoIndex = -1;
+	for (int i = 0; i < mFmtContext->nb_streams; i++)
+	{
+		AVStream *st = mFmtContext->streams[i];
+		AVCodecContext *avctx = st->codec;
 
-	if (!mVideo_disable)
-		st_index[AVMEDIA_TYPE_VIDEO] =
-		av_find_best_stream(mFormat_context, AVMEDIA_TYPE_VIDEO,
-		st_index[AVMEDIA_TYPE_VIDEO], -1, NULL, 0);
-	if (!mAudio_disable)
-		st_index[AVMEDIA_TYPE_AUDIO] =
-		av_find_best_stream(mFormat_context, AVMEDIA_TYPE_AUDIO,
-		st_index[AVMEDIA_TYPE_AUDIO],
-		st_index[AVMEDIA_TYPE_VIDEO],
-		NULL, 0);
+		if (AVMEDIA_TYPE_AUDIO == avctx->codec_type){
+			mAudioIndex = i;
+			mAudioStream_tb = mFmtContext->streams[i]->time_base;
+		}
+		else if (AVMEDIA_TYPE_VIDEO == avctx->codec_type){
+			mVideoIndex = i;
+			mVideoStream_tb = mFmtContext->streams[i]->time_base;
+		}
 
-	/* open the streams */
-	if (st_index[AVMEDIA_TYPE_AUDIO] >= 0) {
-		stream_component_open(st_index[AVMEDIA_TYPE_AUDIO]);
 	}
 
-	ret = -1;
+	/* open the streams */
+	if (mVideoIndex >= 0) {
+		ret = stream_component_open(mVideoIndex);
+	}
 
-	if (st_index[AVMEDIA_TYPE_VIDEO] >= 0) {
-		ret = stream_component_open(st_index[AVMEDIA_TYPE_VIDEO]);
+	if (mAudioIndex >= 0) {
+		ret = stream_component_open(mAudioIndex);
 	}
 
 	return ret;
 }
-int ff_demuxer::demux_loop()
+
+void ff_demuxer::setFmtOpts(AVDictionary ** fmt_opts)
+{
+	if (NULL == fmt_opts)
+		return;
+
+	//video
+	if (mConfig->pix_fmt != AV_PIX_FMT_NONE){
+		const char * pix_format = av_get_pix_fmt_name(mConfig->pix_fmt);
+		av_dict_set(fmt_opts, "pixel_format", pix_format, 0);
+	}
+	if (mConfig->width &&mConfig->height){
+		char video_size[16];
+		snprintf(video_size, sizeof(video_size), "%dx%d", mConfig->width, mConfig->height);
+		av_dict_set(fmt_opts, "video_size", video_size, 0);
+	}
+
+	if (mConfig->Fps){
+		char framerate[16];
+		snprintf(framerate, sizeof(framerate), "%d", mConfig->Fps);
+		av_dict_set(fmt_opts, "framerate", framerate, 0);
+	}
+	//audio
+	if (mConfig->channel){
+		char channels[16];
+		snprintf(channels, sizeof(channels), "%d", mConfig->channel);
+		av_dict_set(fmt_opts, "channels", channels, 0);
+	}
+	
+	if (mConfig->bitsPerSample){
+		char sample_size[16];
+		snprintf(sample_size, sizeof(sample_size), "%d", mConfig->bitsPerSample);
+		av_dict_set(fmt_opts, "sample_size", sample_size, 0);
+	}
+
+	if (mConfig->frequency){
+		char sample_rate[16];
+		snprintf(sample_rate, sizeof(sample_rate), "%d", mConfig->frequency);
+		av_dict_set(fmt_opts, "sample_rate", sample_rate, 0);
+	}	
+	
+	//av_dict_set(fmt_opts, "audio_buffer_size", "50", 0);
+}
+
+int ff_demuxer::open_input()
+{
+	int ret = 0;
+	AVDictionary *format_opts = NULL;
+
+	setFmtOpts(&format_opts);
+	mFmtContext = avformat_alloc_context();
+	if (!mFmtContext) {
+		av_log(NULL, AV_LOG_FATAL, "Could not allocate context.\n");
+		ret = AVERROR(ENOMEM);
+		goto fail;
+	}
+
+	mFmtContext->interrupt_callback.callback = interrupt_cb;
+	mFmtContext->interrupt_callback.opaque = this;
+
+
+	if (!mInputFormat)
+		mInputFormat = av_find_input_format(mConfig->input_format);
+
+	ret = avformat_open_input(&mFmtContext, mConfig->input, mInputFormat, &format_opts);
+	if (ret < 0) {
+		print_error(mConfig->input, ret);
+		goto fail;
+	}
+
+	mFmtContext->flags |= AVFMT_FLAG_GENPTS;
+	av_format_inject_global_side_data(mFmtContext);
+
+	if (mFmtContext->pb)
+		mFmtContext->pb->eof_reached = 0; // FIXME hack, ffplay maybe should not use avio_feof() to test for the end
+
+	av_dump_format(mFmtContext, 0, mConfig->input, 0);
+	av_dict_free(&format_opts);
+	return 0;
+fail:
+	av_dict_free(&format_opts);
+	if (mFmtContext){
+		avformat_close_input(&mFmtContext);
+	}
+
+	return -1;
+}
+
+int ff_demuxer::demuxer_loop()
 {
 	int ret=0;
 
 	AVPacket pktStack, *pkt = &pktStack;
 
 	if (open_input() < 0)
-		goto fail;
+		goto End;
 
 	if (find_and_initialize_stream_decoders() < 0)
-		goto fail;
-	
-	mCallback->demuxer_ready_callback();
+		goto End;
 
 	mAudio_decoder->ff_decoder_start();
 	mVideo_decoder->ff_decoder_start();
@@ -319,26 +292,17 @@ int ff_demuxer::demux_loop()
 		if (mAbort)
 			break;
 
-		ret = av_read_frame(mFormat_context, pkt);
+		ret = av_read_frame(mFmtContext, pkt);
 		if (ret < 0) {
-			if ((ret == AVERROR_EOF || avio_feof(mFormat_context->pb)) && !mEof) {
-				if (mAudio_st_index >= 0)
-					put_nullpacket(mAudio_st_index);
-				if (mVideo_st_index)
-					put_nullpacket(mVideo_st_index);
-				mEof = 1;
+			if ((ret == AVERROR_EOF || avio_feof(mIoContext))) {
+				pushEmptyPacket();
+				goto End;
 			}
-			if (mFormat_context->pb && mFormat_context->pb->error)
-				break;
-			continue;
-		}
-		else {
-			mEof = 0;
 		}
 
-//normalize the timebase of the pkt 
+        //normalize timebase 
 		AVRational stream_tb;
-		if (pkt->stream_index == mAudio_st_index)
+		if (pkt->stream_index == mAudioIndex)
 			stream_tb = mAudioStream_tb;
 		else
 			stream_tb = mVideoStream_tb;
@@ -352,58 +316,57 @@ int ff_demuxer::demux_loop()
 		if (AV_NOPTS_VALUE != pkt->duration)
 			pkt->duration = av_rescale_q(pkt->duration, stream_tb, std_tb_us);
 
+		TRACE("ff_demuxer::demuxer_loop:%lld\n", pkt->pts);
+
 		//debug
 		if (AV_NOPTS_VALUE == pkt->dts || AV_NOPTS_VALUE == pkt->pts)
 			TRACE("packet timestamps not valuable\n");
 
-//set the start offset for correct pts
-		if (AV_NOPTS_VALUE == mStart_pos){
+#if 0
+        //set the start offset for correct pts
+		if (AV_NOPTS_VALUE == mStartPTS){
 			if (AV_NOPTS_VALUE != pkt->dts)
-				mStart_pos = pkt->dts;
+				mStartPTS = pkt->dts;
 			else
-				mStart_pos = pkt->pts;
+				mStartPTS = pkt->pts;
 		}
 		if (AV_NOPTS_VALUE != pkt->pts)
-		    pkt->pts -= mStart_pos;
+			pkt->pts -= mStartPTS;
 
 		if (AV_NOPTS_VALUE != pkt->dts)
-		    pkt->dts -= mStart_pos;
-
-//if pts < 0 , discard the pkt;
+			pkt->dts -= mStartPTS;
+#endif
+        //if pts < 0 , discard the pkt;
 		if (pkt->pts < 0)
 			goto unref;
 
-		if (pkt->stream_index == mAudio_st_index) {
-			mAudio_decoder->push_back_packet(pkt);
-		}else if (pkt->stream_index == mVideo_st_index) {
-			mVideo_decoder->push_back_packet(pkt);
+		if (pkt->stream_index == mAudioIndex) {
+			mAudio_decoder->pushback_packet(pkt);
+		}else if (pkt->stream_index == mVideoIndex) {
+			mVideo_decoder->pushback_packet(pkt);
 		}else {
 unref:
 			av_packet_unref(pkt);
 		}
 	}
-
-	ret = 0;
-fail:
-	//if (mFormat_context)
-		//avformat_close_input(&mFormat_context);
+End:
 	return 0;
 }
 
-int ff_demuxer::demuxer_open(const char *filename, char *input_format, decoder_callback *callback)
+int ff_demuxer::demuxer_thread(void *param)
 {
-	mInput = av_strdup(filename);
-	if (!mInput)
-		goto fail;
+	ff_demuxer *demuxer = (ff_demuxer *)param;
+	return demuxer->demuxer_loop();
+}
 
-	mInput_format = av_strdup(input_format);
-	mCallback = callback;
+int ff_demuxer::startDemuxer()
+{
+	if (NULL == mConfig || NULL == mCallback)
+		return -1;
 
-	mDemuxer_thread = new boost_thread(ff_demuxer::demux_thread, (void*)this);
+	mDemuxer_thread = new boost_thread(ff_demuxer::demuxer_thread, (void*)this);
 	if (!mDemuxer_thread) {
-		av_log(NULL, AV_LOG_FATAL, "demux_thread() err\n");
-fail:
-		demuxer_close();
+		av_log(NULL, AV_LOG_FATAL, "crate demuxer thread failed!\n");
 		return -1;
 	}
 	return 0;

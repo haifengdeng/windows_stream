@@ -52,13 +52,13 @@
       <WarningLevel>Level3</WarningLevel>
       <Optimization>Disabled</Optimization>
       <PreprocessorDefinitions>WIN32;_WIN32;_DEBUG;_CONSOLE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
-      <AdditionalIncludeDirectories>include;D:\Cplusplus\boost_1_61_0</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>include</AdditionalIncludeDirectories>
     </ClCompile>
     <Link>
       <SubSystem>Console</SubSystem>
       <GenerateDebugInformation>true</GenerateDebugInformation>
-      <AdditionalLibraryDirectories>lib;D:\Cplusplus\boost_1_61_0\stage\lib</AdditionalLibraryDirectories>
-      <AdditionalDependencies>avcodec.lib;avformat.lib;avutil.lib;avdevice.lib;avfilter.lib;postproc.lib;swresample.lib;swscale.lib;SDL.lib;SDLmain.lib;boost_thread-vc120-mt-gd-1_61.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalLibraryDirectories>lib;</AdditionalLibraryDirectories>
+      <AdditionalDependencies>avcodec.lib;avformat.lib;avutil.lib;avdevice.lib;avfilter.lib;postproc.lib;swresample.lib;swscale.lib;SDL.lib;SDLmain.lib;strmiids.lib;Quartz.lib;Shlwapi.lib;%(AdditionalDependencies)</AdditionalDependencies>
     </Link>
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">
@@ -81,20 +81,42 @@
     </Link>
   </ItemDefinitionGroup>
   <ItemGroup>
+    <None Include="json\json_valueiterator.inl" />
+    <None Include="json\sconscript" />
+    <None Include="json\version.h.in" />
     <None Include="ReadMe.txt" />
   </ItemGroup>
   <ItemGroup>
+    <ClInclude Include="audio-io.h" />
+    <ClInclude Include="audio_process\audio-resampler.h" />
+    <ClInclude Include="audio_process\circlebuf.h" />
+    <ClInclude Include="audio_process\std_bool.h" />
     <ClInclude Include="boost_thread.h" />
+    <ClInclude Include="dshow\dshow_capture.h" />
+    <ClInclude Include="dshow\Dshow_monitor.h" />
+    <ClInclude Include="dshow\riff.h" />
     <ClInclude Include="filter.h" />
     <ClInclude Include="input.h" />
+    <ClInclude Include="json\json_tool.h" />
+    <ClInclude Include="media-io-defs.h" />
     <ClInclude Include="output.h" />
+    <ClInclude Include="push.h" />
     <ClInclude Include="stdafx.h" />
+    <ClInclude Include="stream_output.h" />
+    <ClInclude Include="stream_source.h" />
     <ClInclude Include="targetver.h" />
     <ClInclude Include="config.h" />
     <ClInclude Include="trace_debug.h" />
     <ClInclude Include="videoDisplay.h" />
+    <ClInclude Include="wasapiSource.h" />
+    <ClInclude Include="wasapi\ComPtr.hpp" />
+    <ClInclude Include="wasapi\CoTaskMemPtr.hpp" />
+    <ClInclude Include="wasapi\enum-wasapi.hpp" />
+    <ClInclude Include="wasapi\HRError.hpp" />
+    <ClInclude Include="wasapi\WinHandle.hpp" />
   </ItemGroup>
   <ItemGroup>
+    <ClCompile Include="audio_process\audio-resampler-ffmpeg.c" />
     <ClCompile Include="av_sync.cpp">
       <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">NotUsing</PrecompiledHeader>
     </ClCompile>
@@ -104,9 +126,26 @@
     <ClCompile Include="demuxing.cpp">
       <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">NotUsing</PrecompiledHeader>
     </ClCompile>
+    <ClCompile Include="dshow\dshow.c" />
+    <ClCompile Include="dshow\dshow_common.c" />
+    <ClCompile Include="dshow\dshow_crossbar.c" />
+    <ClCompile Include="dshow\dshow_enummediatypes.c" />
+    <ClCompile Include="dshow\dshow_enumpins.c" />
+    <ClCompile Include="dshow\dshow_filter.c" />
+    <ClCompile Include="dshow\Dshow_monitor.cpp" />
+    <ClCompile Include="dshow\dshow_pin.c" />
+    <ClCompile Include="dshow\raw.c" />
+    <ClCompile Include="dshow\riff.c" />
     <ClCompile Include="encoder.cpp">
       <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">NotUsing</PrecompiledHeader>
     </ClCompile>
+    <ClCompile Include="ffmpeg_output.cpp" />
+    <ClCompile Include="ffmpeg_source.cpp" />
+    <ClCompile Include="filter_source.cpp" />
+    <ClCompile Include="json\json_reader.cpp" />
+    <ClCompile Include="json\json_value.cpp" />
+    <ClCompile Include="json\json_writer.cpp" />
+    <ClCompile Include="main.cpp" />
     <ClCompile Include="muxing.cpp">
       <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">NotUsing</PrecompiledHeader>
     </ClCompile>
@@ -116,10 +155,13 @@
     <ClCompile Include="push.cpp">
       <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">NotUsing</PrecompiledHeader>
     </ClCompile>
+    <ClCompile Include="send.cpp" />
     <ClCompile Include="stdafx.cpp">
       <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">Create</PrecompiledHeader>
       <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">Create</PrecompiledHeader>
     </ClCompile>
+    <ClCompile Include="stream_output.cpp" />
+    <ClCompile Include="stream_source.cpp" />
     <ClCompile Include="trace_debug.cpp">
       <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">NotUsing</PrecompiledHeader>
     </ClCompile>
@@ -127,6 +169,9 @@
       <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">NotUsing</PrecompiledHeader>
     </ClCompile>
     <ClCompile Include="videoDisplay.cpp" />
+    <ClCompile Include="wasapiSource.cpp" />
+    <ClCompile Include="wasapi\enum-wasapi.cpp" />
+    <ClCompile Include="wasapi\win-wasapi.cpp" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">
